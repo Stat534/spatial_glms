@@ -1,0 +1,142 @@
+---
+title: "Spatial GLMs Demo"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+library(tidyverse)
+library(ggmap)
+library(knitr)
+library(gtools)
+library(spBayes)
+library(mgcv)
+library(mnormt)
+library(arm)
+library(rstanarm)
+library(rstan)
+library(MBA)
+set.seed(03172021)
+options(mc.cores = parallel::detectCores())
+```
+
+
+## 1. Simulate and visualize spatial random effects for binary data: No Covariates
+
+```{r, eval = T, echo = T}
+N <- 100
+x1 <- runif(N)
+x2 <- runif(N)
+phi_true <- .2
+sigmasq_true <- 1
+
+d <- dist(cbind(x1,x2), upper = T, diag = T) %>% as.matrix
+H <- sigmasq_true * exp(- d / phi_true)
+w_true <- rmnorm(1,0,H)
+p_true <- pnorm(w_true)
+y_sim <- rbinom(N,1,p_true)
+
+sim1_dat <- tibble(x1 = x1, x2 = x2, w_true = w_true, p_true = p_true, y_sim = as.factor(y_sim))
+
+sim1_dat %>% ggplot(aes(y = x1, x = x2, color = w_true)) + 
+  geom_point() + theme_bw() + 
+  scale_color_gradientn(colours = colorspace::diverge_hcl(7)) +
+  ggtitle('spatial random effect')
+
+sim1_dat %>% ggplot(aes(y = x1, x = x2, color = y_sim)) + 
+  geom_point() + theme_bw() + 
+  ggtitle('Binary Response') + scale_color_manual(values=c("#023FA5", "#8E063B"))
+```
+
+
+## 2. Fit a model for this setting
+
+```{r}
+writeLines(readLines('spatial_probit_demo.stan'))
+```
+
+
+```{r, results = 'hide', message = F, warning = F}
+probit_stan <- stan(file = 'spatial_probit_demo.stan', data = list(N = N, y = y_sim, d = d), 
+                    chains = 2, iter = 5000)
+```
+
+```{r}
+print(probit_stan, pars = c('phi','sigmasq'))
+```
+
+
+## 3. Alternatively, spGLM can be used
+
+Code below is extracted from help file. Note that phi is the inverse of how we have talked about it.
+
+```{r, echo = T}
+################################
+##Spatial binomial
+################################
+
+##Generate binary data
+coords <- as.matrix(expand.grid(seq(0,100,length.out=8), seq(0,100,length.out=8)))
+n <- nrow(coords)
+
+phi <- 3/50
+sigma.sq <- 2
+
+R <- sigma.sq*exp(-phi*as.matrix(dist(coords)))
+w <- rmvn(1, rep(0,n), R)
+
+x <- as.matrix(rep(1,n))
+beta <- 0.1
+p <- 1/(1+exp(-(x%*%beta+w)))
+
+weights <- rep(1, n)
+weights[coords[,1]>mean(coords[,1])] <- 10
+
+y <- rbinom(n, size=weights, prob=p)
+
+##Collect samples
+fit <- glm((y/weights)~x-1, weights=weights, family="binomial")
+beta.starting <- coefficients(fit)
+beta.tuning <- t(chol(vcov(fit)))
+
+n.batch <- 200
+batch.length <- 50
+n.samples <- n.batch*batch.length
+
+m.1 <- spGLM(y~1, family="binomial", coords=coords, weights=weights, 
+             starting=list("beta"=beta.starting, "phi"=0.06,"sigma.sq"=1, "w"=0),
+             tuning=list("beta"=beta.tuning, "phi"=0.5, "sigma.sq"=0.5, "w"=0.5),
+             priors=list("beta.Normal"=list(0,10), "phi.Unif"=c(0.03, 0.3), "sigma.sq.IG"=c(2, 1)),
+             amcmc=list("n.batch"=n.batch, "batch.length"=batch.length, "accept.rate"=0.43),
+             cov.model="exponential", verbose=TRUE, n.report=10)
+
+burn.in <- 0.9*n.samples
+sub.samps <- burn.in:n.samples
+
+print(summary(window(m.1$p.beta.theta.samples, start=burn.in)))
+
+beta.hat <- m.1$p.beta.theta.samples[sub.samps,"(Intercept)"]
+w.hat <- m.1$p.w.samples[,sub.samps]
+
+p.hat <- 1/(1+exp(-(x%*%beta.hat+w.hat)))
+
+y.hat <- apply(p.hat, 2, function(x){rbinom(n, size=weights, prob=p.hat)})
+
+y.hat.mu <- apply(y.hat, 1, mean)
+y.hat.var <- apply(y.hat, 1, var)
+
+##Take a look
+par(mfrow=c(1,2))
+surf <- mba.surf(cbind(coords,y.hat.mu),no.X=100, no.Y=100, extend=TRUE)$xyz.est
+image(surf, main="Interpolated mean of posterior rate\n(observed rate)")
+contour(surf, add=TRUE)
+text(coords, label=paste("(",y,")",sep=""))
+
+surf <- mba.surf(cbind(coords,y.hat.var),no.X=100, no.Y=100, extend=TRUE)$xyz.est
+image(surf, main="Interpolated variance of posterior rate\n(observed #
+of trials)")
+contour(surf, add=TRUE)
+text(coords, label=paste("(",weights,")",sep=""))
+```
+

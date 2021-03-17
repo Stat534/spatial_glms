@@ -1,0 +1,31 @@
+---
+title: "Spatial GLMs Demo"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+library(tidyverse)
+library(ggmap)
+library(knitr)
+library(gtools)
+library(spBayes)
+library(mgcv)
+library(mnormt)
+library(arm)
+library(rstanarm)
+library(rstan)
+library(MBA)
+set.seed(03172021)
+options(mc.cores = parallel::detectCores())
+```
+
+
+## 1. Simulate and visualize spatial random effects for binary data: No Covariates
+
+
+## 2. Fit a model for this setting
+
+## 3. Alternatively, spGLM can be used
+
